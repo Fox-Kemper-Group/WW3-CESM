@@ -150,7 +150,7 @@ module wav_comp_nuopc
   ! 10. Source code :
   !
   !/ ------------------------------------------------------------------- /
-  
+
   use w3gdatmd
   use w3wdatmd              , only: time, w3ndat, w3dimw, w3setw
   use w3adatmd
@@ -187,6 +187,7 @@ module wav_comp_nuopc
   use wav_import_export     , only : state_getfldptr
   use wav_shr_methods       , only : chkerr, state_setscalar, state_getscalar, state_diagnose, alarmInit
   use wav_shr_methods       , only : set_component_logging, get_component_instance, log_clock_advance
+!$ use omp_lib              , only : omp_set_num_threads
 
   implicit none
   private ! except
@@ -214,7 +215,8 @@ module wav_comp_nuopc
   integer                 :: flds_scalar_index_ny = 0
   integer                 :: flds_scalar_index_precip_factor = 0._r8
 
-  logical                 :: masterproc 
+  logical                 :: masterproc
+  integer                 :: nthrds
   integer     , parameter :: debug = 1
   character(*), parameter :: modName =  "(wav_comp_nuopc)"
   character(*), parameter :: u_FILE_u = &
@@ -410,10 +412,11 @@ contains
     integer, allocatable, target   :: mask_local(:)
     integer, allocatable           :: gindex_lnd(:)
     integer, allocatable           :: gindex_sea(:)
-    integer, allocatable           :: gindex(:) 
+    integer, allocatable           :: gindex(:)
     logical                        :: flgrd(nogrd), prtfrm, flt
     character(len=23)              :: dtme21
     integer                        :: iam, mpi_comm
+    integer                        :: localPeCount
     character(len=10), allocatable :: pnames(:)
     character(len=*),parameter :: subname = '(wav_comp_nuopc:InitializeRealize)'
     ! -------------------------------------------------------------------
@@ -446,6 +449,10 @@ contains
     call ESMF_VMGet(vm, mpiCommunicator=mpi_comm, peCount=naproc, localPet=iam, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
     iaproc = iam + 1
+
+    call ESMF_VMGet(vm, pet=iam, PeCount=localPeCount, rc=rc)
+    if (ChkErr(rc,__LINE__,u_FILE_u)) return
+
 
     !--------------------------------------------------------------------
     ! IO set-up
@@ -518,6 +525,18 @@ contains
     ! Redirect share output to wav log
     call shr_file_getLogUnit (shrlogunit)
     call shr_file_setLogUnit (ndso)
+
+    if(localPeCount == 1) then
+       call NUOPC_CompAttributeGet(gcomp, "nthreads", value=cvalue, rc=rc)
+       if (ESMF_LogFoundError(rcToCheck=rc, msg=ESMF_LOGERR_PASSTHRU, line=__LINE__, file=u_FILE_u)) return
+       read(cvalue,*) nthrds
+    else
+       nthrds = localPeCount
+    endif
+!$  call omp_set_num_threads(nthrds)
+    if (iam==0) then
+       write(ndso,*) 'nthrds set to ',nthrds
+    endif
 
     if ( iaproc == napout ) write (ndso,900)
     call shr_sys_flush(ndso)
@@ -824,7 +843,7 @@ contains
     !-------------
     ! create a global index that includes both sea and land - but put land at the end
     !-------------
-    nlnd = (my_lnd_end - my_lnd_start + 1) 
+    nlnd = (my_lnd_end - my_lnd_start + 1)
     allocate(gindex(nlnd + nseal))
     do ncnt = 1,nlnd + nseal
        if (ncnt <= nseal) then
@@ -841,7 +860,7 @@ contains
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
 
     !-------------
-    ! create the mesh 
+    ! create the mesh
     !-------------
     call NUOPC_CompAttributeGet(gcomp, name='mesh_wav', value=cvalue, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
@@ -910,7 +929,7 @@ contains
     ! -------------------------------------------------------------------
 
     !--------------------------------------------------------------------
-    ! Create export state 
+    ! Create export state
     !--------------------------------------------------------------------
     call NUOPC_ModelGet(gcomp, exportState=exportState, rc=rc)
     if (ChkErr(rc,__LINE__,u_FILE_u)) return
@@ -942,7 +961,7 @@ contains
   !=====================================================================
 
   subroutine ModelAdvance(gcomp, rc)
-  
+
     !------------------------
     ! Run WW3
     !------------------------
@@ -963,7 +982,7 @@ contains
     integer          :: time0(2)
     integer          :: timen(2)
     integer          :: shrlogunit ! original log unit and level
-    character(len=*),parameter :: subname = '(wav_comp_nuopc:ModelAdvance) ' 
+    character(len=*),parameter :: subname = '(wav_comp_nuopc:ModelAdvance) '
     !-------------------------------------------------------
 
     !------------
@@ -971,6 +990,8 @@ contains
     !------------
     call shr_file_getLogUnit (shrlogunit)
     call shr_file_setLogUnit (stdout)
+
+!$  call omp_set_num_threads(nthrds)
 
     !------------
     ! query the Component for its importState, exportState and clock
@@ -1023,7 +1044,7 @@ contains
     end if
 
     !------------
-    ! Determine time info 
+    ! Determine time info
     !------------
 
     ! use current time for next time step the NUOPC clock is not updated
